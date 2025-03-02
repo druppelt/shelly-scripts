@@ -15,14 +15,16 @@
 
 /************************   settings  ************************/
 
-Pro4PM_channels = [ 0, 1, 2, 3 ];      // default to sum of all channels for 4PM 
-Pro3EM_channels = [ 'a', 'b', 'c' ];   // similar if device is 3EM
+Pro4PM_channels = [0, 1, 2, 3];      // default to sum of all channels for 4PM 
+Pro3EM_channels = ['a', 'b', 'c'];   // similar if device is 3EM
 
 poll_time = 300;             // unless overriden in a schedule, defines time between shedding or adding load
 short_poll = 10;             // faster cycle time when verifying that an "on" device is still on
-logging = false;             // set to true to enable debug logging
+logging = true;             // set to true to enable debug logging
 simulation_power = 0;        // set this to manually test in console
-max_parallel_calls = 4;      // number of outgoing calls to devices at a time. This is both for turning on/off the relays and for checking the actual state
+max_parallel_calls = 8;      // number of outgoing calls to devices at a time. This is both for turning on/off the relays and for checking the actual state
+invert_power_readings = true; // if the power readings are inverted, set this to true
+
 
 // name needs to be unique
 // descr is not used and just for taking notes for the device
@@ -30,128 +32,147 @@ max_parallel_calls = 4;      // number of outgoing calls to devices at a time. T
 // gen is the generation of the device, see https://shelly-api-docs.shelly.cloud/gen2/Devices/Gen2/ShellyPro1
 // id is the channel, 0 for single channel devices
 // expected power is the power in watts that the device is expected to consume when on
-devices = [ 
-    { "name":"1.1", "descr": "Shelly Plus 1", "addr":"192.168.178.49", "gen":1, "type":"relay", "channel": 0, "expectedPower": 1000 },
-    { "name":"1.2", "descr": "Shelly Plus 1", "addr":"192.168.178.53", "gen":1, "type":"relay", "channel": 0, "expectedPower": 1000 },
-    { "name":"1.3", "descr": "Shelly Plus 1", "addr":"192.168.178.56", "gen":1, "type":"relay", "channel": 0, "expectedPower": 1000 },
-    { "name":"2.1", "descr": "Shelly Plus 1", "addr":"192.168.178.52", "gen":1, "type":"relay", "channel": 0, "expectedPower": 3000 },
-    { "name":"2.2", "descr": "Shelly Plus 1", "addr":"192.168.178.55", "gen":1, "type":"relay", "channel": 0, "expectedPower": 3000 },
-    { "name":"2.3", "descr": "Shelly Plus 1", "addr":"192.168.178.59", "gen":1, "type":"relay", "channel": 0, "expectedPower": 3000 },
+const devices = [
+    { "name": "1.1", "descr": "Shelly 1 Mini Gen 3", "addr": "192.168.178.49", "gen": 1, "type": "relay", "channel": 0, "expectedPower": 1000 },
+    { "name": "1.2", "descr": "Shelly 1 Mini Gen 3", "addr": "192.168.178.53", "gen": 1, "type": "relay", "channel": 0, "expectedPower": 1000 },
+    { "name": "1.3", "descr": "Shelly 1 Mini Gen 3", "addr": "192.168.178.56", "gen": 1, "type": "relay", "channel": 0, "expectedPower": 1000 },
+    { "name": "2.1", "descr": "Shelly 1 Mini Gen 3", "addr": "192.168.178.52", "gen": 1, "type": "relay", "channel": 0, "expectedPower": 3000 },
+    { "name": "2.2", "descr": "Shelly 1 Mini Gen 3", "addr": "192.168.178.55", "gen": 1, "type": "relay", "channel": 0, "expectedPower": 3000 },
+    { "name": "2.3", "descr": "Shelly 1 Mini Gen 3", "addr": "192.168.178.59", "gen": 1, "type": "relay", "channel": 0, "expectedPower": 3000 },
     // { "name":"3.1", "descr": "Shelly Plus 1, enable to burn EVEN MOAR POWER", "addr":"192.168.178.199", "gen":1, "type":"relay", "channel":0},
-          ];
+];
 
 /***************   program variables, do not change  ***************/
 
 ts = 0;
 idx_next_to_toggle = -1;
 last_cycle_time = 0;
-channel_power = { };
+channel_power = {};
 verifying = false;
 device_name_index_map = {}; // maps device name to index in devices array
 sorted_devices = [];
 queue = []
 in_flight = 0;
 
-function total_power( ) {
-    if ( simulation_power ) return simulation_power;
+function total_power() {
+    if (simulation_power) return simulation_power;
     let power = 0;
-    for( let k in channel_power )
-       power += channel_power[ k ];
+    for (let k in channel_power)
+        power += channel_power[k];
+    if (invert_power_readings) power = -power;
     return power;
 }
 
-function callback( result, error_code, error_message, user_data ) {
+function callback(result, error_code, error_message, user_data) {
     in_flight--;
-    if ( error_code != 0 ) {
-        print( "fail " + user_data );
+    if (error_code != 0) {
+        print("fail " + user_data);
         // TBD: currently we don't have any retry logic
     } else {
-        if ( logging ) print( "success" );
+        if (logging) print("success");
     }
 }
 
-function turn( deviceName, dir) {
-    let device = devices[ device_name_index_map[ deviceName ] ];
+function turn(deviceName, dir) {
+    let device = devices[device_name_index_map[deviceName]];
     let cmd = "";
-    if ( dir == "on" && device.presumed_state == "on" )
+    if (dir == "on" && device.presumed_state == "on")
         verifying = true;
     else
         verifying = false;
 
     device.presumed_state = dir;
     let on = dir == "on" ? "true" : "false";
-    print( "Turn " + device.name + " " + dir );
+    print("Turn " + device.name + " " + dir);
 
-    if ( simulation_power ) return;
+    if (simulation_power) return;
 
-    if ( def( device.gen ) ) {
-        if ( device.gen == 1 )
-            cmd = device.type+"/"+device.channel.toString()+"?turn="+dir
+    if (def(device.gen)) {
+        if (device.gen == 1)
+            cmd = device.type + "/" + device.channel.toString() + "?turn=" + dir
         else
-            cmd = "rpc/"+device.type+".Set?id="+device.channel.toString()+"&on="+on
-        Shelly.call( "HTTP.GET", { url: "http://"+device.addr+"/"+cmd }, callback, "turn " + dir + " " + device.name );
+            cmd = "rpc/" + device.type + ".Set?id=" + device.channel.toString() + "&on=" + on
+        Shelly.call("HTTP.GET", { url: "http://" + device.addr + "/" + cmd }, callback, "turn " + dir + " " + device.name);
         in_flight++;
     }
-    if ( def( device.on_url ) && dir == "on" ) {
-        Shelly.call( "HTTP.GET", { url: device.on_url }, callback, "turn on " + device.name );
+    if (def(device.on_url) && dir == "on") {
+        Shelly.call("HTTP.GET", { url: device.on_url }, callback, "turn on " + device.name);
         in_flight++;
     }
-    if ( def( device.off_url ) && dir == "off" ) {
-        Shelly.call( "HTTP.GET", { url: device.off_url }, callback, "turn off " + device.name );
+    if (def(device.off_url) && dir == "off") {
+        Shelly.call("HTTP.GET", { url: device.off_url }, callback, "turn off " + device.name);
         in_flight++;
     }
 }
 
-function qturn( deviceName, dir) {
+function qturn(deviceName, dir) {
     if (!def(deviceName)) {
         print("undef in qturn");
         return;
     }
-    queue.push( { "device": deviceName, "dir": dir} )
+    queue.push({ "device": deviceName, "dir": dir })
 }
 
-function check_queue( ) {
-    if ( queue.length > 0 && in_flight < max_parallel_calls ) {
+function check_queue() {
+    if (queue.length > 0 && in_flight < max_parallel_calls) {
         let t = queue[0];
         queue = queue.slice(1);
-        turn( t.device, t.dir);
+        turn(t.device, t.dir);
     }
 }
 
-function check_power( msg ) {
+function check_power(msg) {
     if (!def(msg)) return;
     check_queue();
     let now = Date.now() / 1000;
     let poll_now = false;
-    if ( def( msg.delta ) ) {
-        if ( def( msg.delta.apower ) && msg.id in Pro4PM_channels )
-            channel_power[ msg.id ] = msg.delta.apower;
-        if ( def( msg.delta.a_act_power ) )
-            for ( let k in Pro3EM_channels )
-                channel_power[ Pro3EM_channels[k] ] = msg.delta[ Pro3EM_channels[k] + '_act_power' ];
+    if (def(msg.delta)) {
+        if (def(msg.delta.apower) && msg.id in Pro4PM_channels)
+            channel_power[msg.id] = msg.delta.apower;
+        if (def(msg.delta.a_act_power))
+            for (let k in Pro3EM_channels)
+                channel_power[Pro3EM_channels[k]] = msg.delta[Pro3EM_channels[k] + '_act_power'];
     }
-    let currentPower = total_power( );
+    let currentPower = total_power();
+    print("Current power: " + currentPower + "W");
 
-
-    if ( now > last_cycle_time + poll_time || verifying && now > last_cycle_time + short_poll ) {
+    if (now > last_cycle_time + poll_time || verifying && now > last_cycle_time + short_poll) {
         last_cycle_time = now;
         poll_now = true;
     }
 
 
     // The actual decision making
-    let desiredDeviceStates = devices.map(device => ({ name: device.name, on: false }));
+    let desiredDeviceStates = [];
+    for (let device of devices) {
+        desiredDeviceStates.push({ name: device.name, on: false });
+    }
     for (let device of sorted_devices) {
         if (currentPower >= device.expectedPower) {
-            let deviceState = desiredDeviceStates.find(d => d.name === device.name);
+            let deviceState;
+            for (let i in desiredDeviceStates) {
+                if (desiredDeviceStates[i].name === device.name) {
+                    deviceState = desiredDeviceStates[i];
+                    break;
+                }
+            }
             deviceState.on = true;
             currentPower -= device.expectedPower;
         }
     }
 
-    if ( logging ) print("check_power calulated desired states: ", JSON.stringify(desiredDeviceStates, null, 4));
-    if ( logging ) print("expect "  + currentPower + "W surplus");
-    
+    if (logging) {
+        let states = "";
+        for (let i = 0; i < desiredDeviceStates.length; i++) {
+            states += desiredDeviceStates[i].name + ":" + (desiredDeviceStates[i].on ? 'on' : 'off');
+            if (i < desiredDeviceStates.length - 1) {
+                states += ", ";
+            }
+        }
+        print("Desired device states: " + states);
+    }
+    if (logging) print("expect " + currentPower + "W surplus");
+
     for (let deviceState of desiredDeviceStates) {
         if (deviceState.on) {
             qturn(deviceState.name, "on");
@@ -166,18 +187,44 @@ function check_power( msg ) {
     check_queue();
 }
 
-function def( o ) {
+function def(o) {
     return typeof o !== "undefined";
 }
 
-function init( ) {
-    for ( let d in devices ) {
-        device_name_index_map[ devices[d].name ] = d;
+function compareDevices(a, b) {
+    if (def(a) && def(b) && def(a.expectedPower) && def(b.expectedPower)) {
+        return b.expectedPower - a.expectedPower;
+    } else if (def(a.expectedPower)) {
+        return -1;
+    } else if (def(b.expectedPower)) {
+        return 1;
+    }
+    return 0;
+}
+
+function manualSortDevices(devices) {
+    let sorted = [];
+    while (devices.length > 0) {
+        let maxIndex = 0;
+        for (let i = 1; i < devices.length; i++) {
+            if (compareDevices(devices[i], devices[maxIndex]) < 0) {
+                maxIndex = i;
+            }
+        }
+        sorted.push(devices[maxIndex]);
+        devices.splice(maxIndex, 1);
+    }
+    return sorted;
+}
+
+function init() {
+    for (let d in devices) {
+        device_name_index_map[devices[d].name] = d;
         d.presumed_state = "unknown";
     }
-    sorted_devices = [...devices].sort((a, b) => b.expectedPower - a.expectedPower);
+    sorted_devices = manualSortDevices(devices.slice(0));
 }
 
 init();
 
-Shelly.addStatusHandler( check_power );
+Shelly.addStatusHandler(check_power);
