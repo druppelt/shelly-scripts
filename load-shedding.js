@@ -18,13 +18,13 @@
 Pro4PM_channels = [0, 1, 2, 3];      // default to sum of all channels for 4PM 
 Pro3EM_channels = ['a', 'b', 'c'];   // similar if device is 3EM
 
-poll_time = 300;             // unless overriden in a schedule, defines time between shedding or adding load
-short_poll = 10;             // faster cycle time when verifying that an "on" device is still on
-logging = true;             // set to true to enable debug logging
-simulation_power = 0;        // set this to manually test in console
-max_parallel_calls = 8;      // number of outgoing calls to devices at a time. This is both for turning on/off the relays and for checking the actual state
+poll_time = 300;              // unless overriden in a schedule, defines time between shedding or adding load
+short_poll = 10;              // faster cycle time when verifying that an "on" device is still on
+logging = true;               // set to true to enable debug logging
+simulation_power = 0;         // set this to manually test in console
+max_parallel_calls = 8;       // number of outgoing calls to devices at a time. This is both for turning on/off the relays and for checking the actual state
 invert_power_readings = true; // if the power readings are inverted, set this to true
-
+buffer_in_watt = 500;         // buffer to keep in reserve, to avoid turning on devices too early
 
 // name needs to be unique
 // descr is not used and just for taking notes for the device
@@ -134,7 +134,7 @@ function check_power(msg) {
                 channel_power[Pro3EM_channels[k]] = msg.delta[Pro3EM_channels[k] + '_act_power'];
     }
     let currentPower = total_power();
-    print("Current power: " + currentPower + "W");
+    print("Current power: " + currentPower + "W, buffer: " + buffer_in_watt + "W");
 
     if (now > last_cycle_time + poll_time || verifying && now > last_cycle_time + short_poll) {
         last_cycle_time = now;
@@ -147,8 +147,10 @@ function check_power(msg) {
     for (let device of devices) {
         desiredDeviceStates.push({ name: device.name, on: false });
     }
+    remainingPower = currentPower;
+    remainingPower -= buffer_in_watt;
     for (let device of sorted_devices) {
-        if (currentPower >= device.expectedPower) {
+        if (remainingPower >= device.expectedPower) {
             let deviceState;
             for (let i in desiredDeviceStates) {
                 if (desiredDeviceStates[i].name === device.name) {
@@ -157,7 +159,7 @@ function check_power(msg) {
                 }
             }
             deviceState.on = true;
-            currentPower -= device.expectedPower;
+            remainingPower -= device.expectedPower;
         }
     }
 
