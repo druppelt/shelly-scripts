@@ -2,6 +2,13 @@
 // based on: https://github.com/ALLTERCO/shelly-script-examples/blob/main/advanced-load-shedding.js
 
 
+// TODO:
+// - log queue length (this is probably the OMM issue)
+// - add a check to only change device state if it is different from the current state
+// - add a full sync interval option, where all devices are checked and turned on/off if needed
+// - add hysteresis to prevent rapid on/off cycles (so different thresholds for turning on and off)
+// - add option for some kind of timesmoothing. maybe a moving average of the power consumption, or the power has to be above treshold for x seconds before turning on a device
+
 // Key considerations:
 
 // 1. Make sure the expected power for each device is accurate. If a device is expected to consume 1000W, but actually consumes 2000W, the script will not be able to accurately manage the load.
@@ -22,8 +29,8 @@ poll_time = 300;              // unless overriden in a schedule, defines time be
 short_poll = 10;              // faster cycle time when verifying that an "on" device is still on
 logging = true;               // set to true to enable debug logging
 simulation_power = 0;         // set this to manually test in console
-max_parallel_calls = 8;       // number of outgoing calls to devices at a time. This is both for turning on/off the relays and for checking the actual state
-invert_power_readings = true; // if the power readings are inverted, set this to true
+max_parallel_calls = 3;       // number of outgoing calls to devices at a time. This is both for turning on/off the relays and for checking the actual state
+invert_power_readings = true; // if the power readings are inverted, set this to true. The logs of the script should report negative values if you produce more than you consume
 buffer_in_watt = 500;         // buffer to keep in reserve, to avoid turning on devices too early
 
 // name needs to be unique
@@ -66,14 +73,18 @@ function total_power() {
 function callback(result, error_code, error_message, user_data) {
     in_flight--;
     if (error_code != 0) {
-        print("fail " + user_data);
+        print("load-shedding.js: " + "fail " + user_data);
         // TBD: currently we don't have any retry logic
     } else {
-        if (logging) print("success");
+        if (logging) print("load-shedding.js: " + "success");
     }
 }
 
 function turn(deviceName, dir) {
+    if (dir != "on" && dir != "off") {
+        print("load-shedding.js: " + "Invalid direction '" + dir + "'in turn");
+        return;
+    }
     let device = devices[device_name_index_map[deviceName]];
     let cmd = "";
     if (dir == "on" && device.presumed_state == "on")
@@ -81,9 +92,16 @@ function turn(deviceName, dir) {
     else
         verifying = false;
 
+    if (device.presumed_state == dir) {
+        // TODO add full sync option, see TODOs at top of script
+        print("load-shedding.js: " + "Device " + device.name + " is presumed to already be " + dir);
+        return;
+    }
+
+
     device.presumed_state = dir;
     let on = dir == "on" ? "true" : "false";
-    print("Turn " + device.name + " " + dir);
+    print("load-shedding.js: " + "Turn " + device.name + " " + dir);
 
     if (simulation_power) return;
 
@@ -107,17 +125,21 @@ function turn(deviceName, dir) {
 
 function qturn(deviceName, dir) {
     if (!def(deviceName)) {
-        print("undef in qturn");
+        print("load-shedding.js: " + "undef in qturn");
         return;
     }
     queue.push({ "device": deviceName, "dir": dir })
 }
 
 function check_queue() {
-    if (queue.length > 0 && in_flight < max_parallel_calls) {
-        let t = queue[0];
-        queue = queue.slice(1);
-        turn(t.device, t.dir);
+    print("load-shedding.js: " + "check_queue - queue.length: " + queue.length + ", in_flight: " + in_flight);
+
+    for (let i = 0; i < max_parallel_calls; i++) {
+        if (queue.length > 0 && in_flight < max_parallel_calls) {
+            let t = queue[0];
+            queue = queue.slice(1);
+            turn(t.device, t.dir);
+        }
     }
 }
 
@@ -125,7 +147,7 @@ function check_power(msg) {
     if (!def(msg)) return;
     check_queue();
     let now = Date.now() / 1000;
-    let poll_now = false;
+    // let poll_now = false;
     if (def(msg.delta)) {
         if (def(msg.delta.apower) && msg.id in Pro4PM_channels)
             channel_power[msg.id] = msg.delta.apower;
@@ -134,11 +156,11 @@ function check_power(msg) {
                 channel_power[Pro3EM_channels[k]] = msg.delta[Pro3EM_channels[k] + '_act_power'];
     }
     let currentPower = total_power();
-    print("Current power: " + currentPower + "W, buffer: " + buffer_in_watt + "W");
+    print("load-shedding.js: " + "Current power: " + currentPower + "W, buffer: " + buffer_in_watt + "W");
 
     if (now > last_cycle_time + poll_time || verifying && now > last_cycle_time + short_poll) {
         last_cycle_time = now;
-        poll_now = true;
+        // poll_now = true;
     }
 
 
@@ -148,9 +170,8 @@ function check_power(msg) {
         desiredDeviceStates.push({ name: device.name, turned: "off" });
     }
     remainingPower = currentPower;
-    remainingPower -= buffer_in_watt;
     for (let device of sorted_devices) {
-        if (remainingPower >= device.expectedPower) {
+        if (remainingPower + device.expectedPower <= -buffer_in_watt) {
             let deviceState;
             for (let i in desiredDeviceStates) {
                 if (desiredDeviceStates[i].name === device.name) {
@@ -159,7 +180,7 @@ function check_power(msg) {
                 }
             }
             deviceState.turned = "on";
-            remainingPower -= device.expectedPower;
+            remainingPower += device.expectedPower;
         }
     }
 
@@ -171,8 +192,8 @@ function check_power(msg) {
                 states += ", ";
             }
         }
-        print("Desired device states: " + states);
-        print("expect " + currentPower + "W surplus");
+        print("load-shedding.js: " + "Desired device states: " + states);
+        print("load-shedding.js: " + "expect " + -remainingPower + "W surplus");
     }
 
     for (let deviceState of desiredDeviceStates) {
