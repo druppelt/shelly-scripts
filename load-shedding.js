@@ -3,9 +3,6 @@
 
 
 // TODO:
-// - log queue length (this is probably the OMM issue)
-// - add a check to only change device state if it is different from the current state
-// - add a full sync interval option, where all devices are checked and turned on/off if needed
 // - add hysteresis to prevent rapid on/off cycles (so different thresholds for turning on and off)
 // - add option for some kind of timesmoothing. maybe a moving average of the power consumption, or the power has to be above treshold for x seconds before turning on a device
 
@@ -13,11 +10,10 @@
 
 // 1. Make sure the expected power for each device is accurate. If a device is expected to consume 1000W, but actually consumes 2000W, the script will not be able to accurately manage the load.
 // 2. The lowest value for poll_time should be 60 - during "turn on" cycles, you should allow enough time for inrush spikes to settle.
-// 3. Priority is in order of highest expected power and position in device list. To reach e.g. 4000W it will enable a 3000W device and a 1000W device, even if there are 8 higher priority 500W devices.
-// 4. Devices without expectedPower are turned on only if every other device is already on. -- not yet implemented
-
-// poll_time: minimum time span between applying normal on/off steps
-// short_poll: when adding devices, highest priority devices are turned on, even if they are presumed to already be on, this shorter time speeds the process
+// 3. The script will not immediatly turn on/off devices that are presumed to already be on/off. If a device is turned on/off manually, the script will only correct this after the next full sync.
+// 4. Lowering the sync_interval will increase the frequency of full syncs, but it will not increase the speed at which the system reacts to changes in power consumption.
+// 5. Priority is in order of highest expected power and position in device list. To reach e.g. 4000W it will enable a 3000W device and a 1000W device, even if there are 8 higher priority 500W devices.
+// 6. Devices without expectedPower are turned on only if every other device is already on. -- not yet implemented
 
 
 /************************   settings  ************************/
@@ -25,11 +21,11 @@
 Pro4PM_channels = [0, 1, 2, 3];      // default to sum of all channels for 4PM 
 Pro3EM_channels = ['a', 'b', 'c'];   // similar if device is 3EM
 
-poll_time = 300;              // unless overriden in a schedule, defines time between shedding or adding load
-short_poll = 10;              // faster cycle time when verifying that an "on" device is still on
+sync_interval = 5 * 60;       // time between full syncs, in seconds
 logging = true;               // set to true to enable debug logging
+debug = false;                // set to true to create even more debug output
 simulation_power = 0;         // set this to manually test in console
-max_parallel_calls = 3;       // number of outgoing calls to devices at a time. This is both for turning on/off the relays and for checking the actual state
+callLimit = 3;                // number of outgoing calls to devices at a time. This is both for turning on/off the relays and for checking the actual state
 invert_power_readings = true; // if the power readings are inverted, set this to true. The logs of the script should report negative values if you produce more than you consume
 buffer_in_watt = 500;         // buffer to keep in reserve, to avoid turning on devices too early
 
@@ -58,8 +54,8 @@ channel_power = {};
 verifying = false;
 device_name_index_map = {}; // maps device name to index in devices array
 sorted_devices = [];
-queue = []
 in_flight = 0;
+full_sync_timer = 0;
 
 function total_power() {
     if (simulation_power) return simulation_power;
@@ -93,15 +89,19 @@ function turn(deviceName, dir) {
         verifying = false;
 
     if (device.presumed_state == dir) {
-        // TODO add full sync option, see TODOs at top of script
-        print("load-shedding.js: " + "Device " + device.name + " is presumed to already be " + dir);
-        return;
+        if (!device.requires_sync) {
+            if (logging) print("load-shedding.js: " + "Device " + device.name + " is presumed to already be " + dir);
+            return;
+        } else {
+            if (logging) print("load-shedding.js: " + "Device " + device.name + " is presumed to already be " + dir + ", but will be synced anyway");
+            device.requires_sync = false;
+        }
+    } else {
+        if (logging) print("load-shedding.js: " + "Turn " + device.name + " " + dir);
     }
-
 
     device.presumed_state = dir;
     let on = dir == "on" ? "true" : "false";
-    print("load-shedding.js: " + "Turn " + device.name + " " + dir);
 
     if (simulation_power) return;
 
@@ -110,42 +110,21 @@ function turn(deviceName, dir) {
             cmd = device.type + "/" + device.channel.toString() + "?turn=" + dir
         else
             cmd = "rpc/" + device.type + ".Set?id=" + device.channel.toString() + "&on=" + on
-        Shelly.call("HTTP.GET", { url: "http://" + device.addr + "/" + cmd }, callback, "turn " + dir + " " + device.name);
+        Call("HTTP.GET", { url: "http://" + device.addr + "/" + cmd }, callback, "turn " + dir + " " + device.name);
         in_flight++;
     }
     if (def(device.on_url) && dir == "on") {
-        Shelly.call("HTTP.GET", { url: device.on_url }, callback, "turn on " + device.name);
+        Call("HTTP.GET", { url: device.on_url }, callback, "turn on " + device.name);
         in_flight++;
     }
     if (def(device.off_url) && dir == "off") {
-        Shelly.call("HTTP.GET", { url: device.off_url }, callback, "turn off " + device.name);
+        Call("HTTP.GET", { url: device.off_url }, callback, "turn off " + device.name);
         in_flight++;
-    }
-}
-
-function qturn(deviceName, dir) {
-    if (!def(deviceName)) {
-        print("load-shedding.js: " + "undef in qturn");
-        return;
-    }
-    queue.push({ "device": deviceName, "dir": dir })
-}
-
-function check_queue() {
-    print("load-shedding.js: " + "check_queue - queue.length: " + queue.length + ", in_flight: " + in_flight);
-
-    for (let i = 0; i < max_parallel_calls; i++) {
-        if (queue.length > 0 && in_flight < max_parallel_calls) {
-            let t = queue[0];
-            queue = queue.slice(1);
-            turn(t.device, t.dir);
-        }
     }
 }
 
 function check_power(msg) {
     if (!def(msg)) return;
-    check_queue();
     let now = Date.now() / 1000;
     // let poll_now = false;
     if (def(msg.delta)) {
@@ -157,11 +136,7 @@ function check_power(msg) {
     }
     let currentPower = total_power();
     print("load-shedding.js: " + "Current power: " + currentPower + "W, buffer: " + buffer_in_watt + "W");
-
-    if (now > last_cycle_time + poll_time || verifying && now > last_cycle_time + short_poll) {
-        last_cycle_time = now;
-        // poll_now = true;
-    }
+    // print("load-shedding.js: " + "in_flight: " + in_flight);
 
 
     // The actual decision making
@@ -197,13 +172,14 @@ function check_power(msg) {
     }
 
     for (let deviceState of desiredDeviceStates) {
-        qturn(deviceState.name, deviceState.turned);
+        turn(deviceState.name, deviceState.turned);
     }
+
+    // print("load-shedding.js: " + "in_flight: " + in_flight);
 
     // TODO add something to only change device state if it is different from the current state
     //  or if the device hasn't been checked in a while
 
-    check_queue();
 }
 
 function def(o) {
@@ -238,14 +214,85 @@ function manualSortDevices(devices) {
     return sorted;
 }
 
+function requestFullSync() {
+    print("load-shedding.js: " + "Requesting full sync");
+    for (let d of devices) {
+        d.requires_sync = true;
+    }
+}
+
 function init() {
     for (let d in devices) {
         device_name_index_map[devices[d].name] = d;
         d.presumed_state = "unknown";
+        d.requires_sync = true;
     }
     sorted_devices = manualSortDevices(devices.slice(0));
+
+    full_sync_timer = Timer.set(sync_interval*1000, true, requestFullSync);
+        
 }
 
-init();
 
-Shelly.addStatusHandler(check_power);
+
+//This is the entry point of the script (called by the Toolbox after 2sek)
+function Main(){
+    init();
+    Shelly.addStatusHandler(check_power);
+}
+
+//Toolbox v1.0(base), a universal Toolbox for Shelly Scripts
+// See https://shelly-forum.com/thread/24924-shelly-script-toolbox-v1-0/?postID=257597#post257597
+function Efilter(d,p,deBug) { //Event Filter, d=eventdata, p={device:[], filterKey:[], filterValue:[], noInfo:true, inData:true}->optional_parameter 
+    try{
+        let fR= {}; //d.info= d.info.data; 
+        if(p.noInfo){fR= d; d= {}; d.info= fR; fR= {};} if(p.inData && d.info.data){Object.assign(d.info,d.info.data) delete d.info.data;}
+        if(!d.info) fR.useless= true; if(p.device && p.device.length && p.device.indexOf(d.info.component) === -1) fR.useless= true;
+        if(p.device && p.device.length && !fR.useless && !p.filterKey && !p.filterValue) fR= d.info;
+        if(p.filterKey && !fR.useless) for(f of p.filterKey) for(k in d.info) if(f === k) fR[k]= d.info[k];
+        if(p.filterValue && !fR.useless) for(f of p.filterValue) for(v of d.info) if(Str(v) && f === v) fR[Str(v)]= v;
+        if(deBug) print('\nDebug: EventData-> ', d, '\n\nDebug: Result-> ', fR, '\n');
+        if(Str(fR) === '{}' || fR.useless){return;} return fR;}catch(e){ErrorMsg(e,'Efilter()');}}
+function ErrorChk(r,e,m,d){ //Shelly.call error check
+    try{
+        aC--; if(aC<0) aC= 0;
+        if(d.CB && d.uD) d.CB(r,d.uD); if(d.CB && !d.uD) d.CB(r);
+        if(!d.CB && d.uD) print('Debug: ',d.uD); if(e) throw new Error(Str(m)); 
+        if(Str(r) && Str(r.code) && r.code !== 200) throw new Error(Str(r));
+        }catch(e){ErrorMsg(e,'ErrorChk(), call Answer');}}
+function Cqueue(){ //Shelly.call queue
+  try{
+      if(!cCache[0] && !nCall[0]) return; 
+      while(cCache[0] && aC < callLimit){if(cCache[0] && !nCall[0]){nCall= cCache[0]; cCache.splice(0,1);}
+      if(nCall[0] && aC < callLimit){Call(nCall[0],nCall[1],nCall[2],nCall[3],nCall[4]); nCall= [];}} if(tH9){Timer.clear(tH9); tH9= 0;}
+      if(nCall[0] || cCache[0])if(cSp <= 0) cSp= 0.1; tH9= Timer.set(1000*cSp,0,function(){tH9= 0; Cqueue();});}catch(e){ErrorMsg(e,'Cqueue()');}}
+function Call(m,p,CB,uD,deBug){ //Upgrade Shelly.call
+    try{
+        let d= {};
+        if(deBug) print('Debug: calling:',m,p); if(CB) d.CB= CB; if(Str(uD)) d.uD= uD; if(!m && CB){CB(uD); return;}
+        if(aC < callLimit){aC++; Shelly.call(m,p,ErrorChk,d);}else if(cCache.length < cacheLimit){
+        cCache.push([m,p,CB,uD,deBug]); if(deBug) print('Debug: save call:',m,p,', call queue now:',cCache.length); Cqueue();
+        }else{throw new Error('to many Calls in use, droping call: '+Str(m)+', '+Str(p));}}catch(e){ErrorMsg(e,'Call()');}}
+function Str(d){ //Upgrade JSON.stringify
+    try{
+        if(d === null || d === undefined) return null; if(typeof d === 'string')return d; 
+        return JSON.stringify(d);}catch(e){ErrorMsg(e,'Str()');}}
+function Cut(f,k,o,i){ //Upgrade slice f=fullData, k=key-> where to cut, o=offset->offset behind key, i=invertCut
+    try{
+        let s= f.indexOf(k); if(s === -1) return null; if(o) s= s+o.length || s+o; if(i) return f.slice(0,s); 
+        return f.slice(s);}catch(e){ErrorMsg(e,'Cut()');}}
+function Setup(){ //Wating 2sek, to avoid a Shelly FW Bug
+    try{
+        if(Main && !tH9){tH9= Timer.set(2000,0,function(){print('\nStatus: started Script _[', scriptN,']_');
+        if(callLimit > 4){callLimit= 4;} try{Main();}catch(e){ErrorMsg(e,'Main()'); tH9= 0; Setup();}});}}catch(e){ErrorMsg(e,'Setup()');}}
+function ErrorMsg(e,s,deBug){ //Toolbox formatted Error Msg
+     try{
+         let i=0; if(Cut(e.message, '-104: Timed out')) i= 'wrong URL or device may be offline';
+         if(Cut(e.message, 'calls in progress')) i= 'reduce _[ callLimit ]_ by 1 and try again, its a global variabel at the end of the toolbox';
+         if(s === 'Main()' || deBug) i= e.stack; if(Cut(e.message, '"Main" is not')) i= 'define a Main() function before using Setup()';
+         print('Error:',s || "",'---> ',e.type,e.message); if(i) print('Info: maybe -->',i);}catch(e){print('Error: ErrorMsg() --->',JSON.stringify(e));}}
+var tH8= 0, tH9= 0, aC= 0, cCache= [], nCall= [], callLimit= 4, cacheLimit= 40, cSp= 0.1; //Toolbox global variable
+var Status= Shelly.getComponentStatus, Config= Shelly.getComponentConfig; //Renamed native function 
+var info= Shelly.getDeviceInfo(), scriptID= Shelly.getCurrentScriptId(), scriptN= Config('script',scriptID).name; //Pseudo const, variabel
+//Toolbox v1.0(base), Shelly FW >1.0.8
+Setup();
