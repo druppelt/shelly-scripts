@@ -79,16 +79,16 @@ function total_power() {
 function callback(result, error_code, error_message, user_data) {
     in_flight--;
     if (error_code != 0) {
-        print("load-shedding.js: " + "fail " + user_data);
+        log("fail " + user_data);
         // TBD: currently we don't have any retry logic
     } else {
-        if (logging) print("load-shedding.js: " + "success");
+        if (logging) log("success");
     }
 }
 
 function turn(deviceName, dir) {
     if (dir != "on" && dir != "off") {
-        print("load-shedding.js: " + "Invalid direction '" + dir + "'in turn");
+        log("Invalid direction '" + dir + "'in turn");
         return;
     }
     let device = devices[device_name_index_map[deviceName]];
@@ -100,14 +100,14 @@ function turn(deviceName, dir) {
 
     if (device.presumed_state == dir) {
         if (!device.requires_sync) {
-            if (logging) print("load-shedding.js: " + "Device " + device.name + " is presumed to already be " + dir);
+            if (logging) log("Device " + device.name + " is presumed to already be " + dir);
             return;
         } else {
-            if (logging) print("load-shedding.js: " + "Device " + device.name + " is presumed to already be " + dir + ", but will be synced anyway");
+            if (logging) log("Device " + device.name + " is presumed to already be " + dir + ", but will be synced anyway");
             device.requires_sync = false;
         }
     } else {
-        if (logging) print("load-shedding.js: " + "Turn " + device.name + " " + dir);
+        if (logging) log("Turn " + device.name + " " + dir);
     }
 
     device.presumed_state = dir;
@@ -143,8 +143,8 @@ function check_power(msg) {
                 channel_power[Pro3EM_channels[k]] = msg.delta[Pro3EM_channels[k] + '_act_power'];
     }
     let currentPower = total_power();
-    print("load-shedding.js: " + "Current power: " + currentPower + "W, headroom: " + power_headroom + "W");
-    // print("load-shedding.js: " + "in_flight: " + in_flight);
+    log("Current power: " + currentPower + "W, headroom: " + power_headroom + "W");
+    // log("in_flight: " + in_flight);
 
 
     // The actual decision making
@@ -175,15 +175,15 @@ function check_power(msg) {
                 states += ", ";
             }
         }
-        print("load-shedding.js: " + "Desired device states: " + states);
-        print("load-shedding.js: " + "expect " + -remainingPower + "W surplus");
+        log("Desired device states: " + states);
+        log("expect " + -remainingPower + "W surplus");
     }
 
     for (let deviceState of desiredDeviceStates) {
         turn(deviceState.name, deviceState.turned);
     }
 
-    // print("load-shedding.js: " + "in_flight: " + in_flight);
+    // log("in_flight: " + in_flight);
 
 }
 
@@ -219,13 +219,13 @@ function manualSortDevices(devices) {
     return sorted;
 }
 
-// function log(msg) {
-//     // TODO consider adding an option to send logs directly to a log server, MQTT, etc.
-//     print("load-shedding.js: " + msg);
-// }
+function log(msg) {
+    // TODO consider adding an option to send logs directly to a log server, MQTT, etc.
+    print("load-shedding.js: " + msg);
+}
 
 function requestFullSync() {
-    print("load-shedding.js: " + "Requesting full sync");
+    log("Requesting full sync");
     for (let d of devices) {
         d.requires_sync = true;
     }
