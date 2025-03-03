@@ -5,6 +5,13 @@
 // TODO:
 // - add hysteresis to prevent rapid on/off cycles (so different thresholds for turning on and off)
 // - add option for some kind of timesmoothing. maybe a moving average of the power consumption, or the power has to be above treshold for x seconds before turning on a device
+// Idea for timesmoothing:
+// store previous desired state with overall expected power
+// every tick, calculate new desired state, check if its equal or higher than the previous overall expected power
+// if it is, add delta time to a timer
+// if it is not, reset timer
+// if the timer reaches a certain threshold, turn all devices to their desired state
+// do the same for turning off devices, with a separate timer and a different threshold
 
 // Key considerations:
 
@@ -21,13 +28,16 @@
 Pro4PM_channels = [0, 1, 2, 3];      // default to sum of all channels for 4PM 
 Pro3EM_channels = ['a', 'b', 'c'];   // similar if device is 3EM
 
-sync_interval = 5 * 60;       // time between full syncs, in seconds
-logging = true;               // set to true to enable debug logging
-debug = false;                // set to true to create even more debug output
-simulation_power = 0;         // set this to manually test in console
-callLimit = 3;                // number of outgoing calls to devices at a time. This is both for turning on/off the relays and for checking the actual state
-invert_power_readings = true; // if the power readings are inverted, set this to true. The logs of the script should report negative values if you produce more than you consume
-buffer_in_watt = 500;         // buffer to keep in reserve, to avoid turning on devices too early
+power_headroom = 500;                   // script will try to keep this value as headroom, to avoid drawing from grid if power readings are fluctuating a lot
+// power_increase_threshold_duration = 60; // time in seconds that the power has to be above the threshold before turning on a device
+// power_decrease_threshold_duration = 30; // time in seconds that the power has to be below the threshold before turning off a device
+sync_interval = 5 * 60;                 // time between full syncs, in seconds
+invert_power_readings = true;           // if the power readings are inverted, set this to true. The logs of the script should report negative values if you produce more than you consume
+
+callLimit = 3;                          // number of outgoing calls to devices at a time. This is both for turning on/off the relays and for checking the actual state
+logging = true;                         // set to true to enable debug logging
+debug = false;                          // set to true to create even more debug output
+simulation_power = 0;                   // set this to manually test in console
 
 // name needs to be unique
 // descr is not used and just for taking notes for the device
@@ -125,8 +135,6 @@ function turn(deviceName, dir) {
 
 function check_power(msg) {
     if (!def(msg)) return;
-    let now = Date.now() / 1000;
-    // let poll_now = false;
     if (def(msg.delta)) {
         if (def(msg.delta.apower) && msg.id in Pro4PM_channels)
             channel_power[msg.id] = msg.delta.apower;
@@ -135,7 +143,7 @@ function check_power(msg) {
                 channel_power[Pro3EM_channels[k]] = msg.delta[Pro3EM_channels[k] + '_act_power'];
     }
     let currentPower = total_power();
-    print("load-shedding.js: " + "Current power: " + currentPower + "W, buffer: " + buffer_in_watt + "W");
+    print("load-shedding.js: " + "Current power: " + currentPower + "W, headroom: " + power_headroom + "W");
     // print("load-shedding.js: " + "in_flight: " + in_flight);
 
 
@@ -146,7 +154,7 @@ function check_power(msg) {
     }
     remainingPower = currentPower;
     for (let device of sorted_devices) {
-        if (remainingPower + device.expectedPower <= -buffer_in_watt) {
+        if (remainingPower + device.expectedPower <= -power_headroom) {
             let deviceState;
             for (let i in desiredDeviceStates) {
                 if (desiredDeviceStates[i].name === device.name) {
@@ -176,9 +184,6 @@ function check_power(msg) {
     }
 
     // print("load-shedding.js: " + "in_flight: " + in_flight);
-
-    // TODO add something to only change device state if it is different from the current state
-    //  or if the device hasn't been checked in a while
 
 }
 
@@ -213,6 +218,11 @@ function manualSortDevices(devices) {
     }
     return sorted;
 }
+
+// function log(msg) {
+//     // TODO consider adding an option to send logs directly to a log server, MQTT, etc.
+//     print("load-shedding.js: " + msg);
+// }
 
 function requestFullSync() {
     print("load-shedding.js: " + "Requesting full sync");
