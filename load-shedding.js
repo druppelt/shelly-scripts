@@ -145,7 +145,7 @@ function check_power(msg) {
     // The actual decision making
     let desiredDeviceStates = [];
     for (let device of devices) {
-        desiredDeviceStates.push({ name: device.name, on: false });
+        desiredDeviceStates.push({ name: device.name, turned: "off" });
     }
     remainingPower = currentPower;
     remainingPower -= buffer_in_watt;
@@ -158,7 +158,7 @@ function check_power(msg) {
                     break;
                 }
             }
-            deviceState.on = true;
+            deviceState.turned = "on";
             remainingPower -= device.expectedPower;
         }
     }
@@ -166,21 +166,17 @@ function check_power(msg) {
     if (logging) {
         let states = "";
         for (let i = 0; i < desiredDeviceStates.length; i++) {
-            states += desiredDeviceStates[i].name + ":" + (desiredDeviceStates[i].on ? 'on' : 'off');
+            states += desiredDeviceStates[i].name + ":" + desiredDeviceStates[i].turned;
             if (i < desiredDeviceStates.length - 1) {
                 states += ", ";
             }
         }
         print("Desired device states: " + states);
+        print("expect " + currentPower + "W surplus");
     }
-    if (logging) print("expect " + currentPower + "W surplus");
 
     for (let deviceState of desiredDeviceStates) {
-        if (deviceState.on) {
-            qturn(deviceState.name, "on");
-        } else {
-            qturn(deviceState.name, "off");
-        }
+        qturn(deviceState.name, deviceState.turned);
     }
 
     // TODO add something to only change device state if it is different from the current state
@@ -204,6 +200,8 @@ function compareDevices(a, b) {
     return 0;
 }
 
+// it seems that Shelly devices can't handle Arrays.sort, 
+// so we need to implement our own sorting function
 function manualSortDevices(devices) {
     let sorted = [];
     while (devices.length > 0) {
