@@ -35,8 +35,14 @@ sync_interval = 5 * 60;                 // time between full syncs, in seconds
 invert_power_readings = true;           // if the power readings are inverted, set this to true. The logs of the script should report negative values if you produce more than you consume
 
 callLimit = 3;                          // number of outgoing calls to devices at a time. This is both for turning on/off the relays and for checking the actual state
-logging = true;                         // set to true to enable debug logging
-debug = false;                          // set to true to create even more debug output
+logging = {
+    level: "debug",                    // set to error, warn, info, debug or trace for increasing amounts of logging
+    gotify: {
+        enabled: false,                // set to true to send logs to a Gotify server
+        url: "http://100.107.143.40",  // The URL of the Gotify server
+        token: "Av.ogGK880RG_7n"       // token for the Gotify server. Predefined with my local docker container, so good luck exploiting these credentials
+    }
+}
 simulation_power = 0;                   // set this to manually test in console
 
 // name needs to be unique
@@ -66,6 +72,8 @@ device_name_index_map = {}; // maps device name to index in devices array
 sorted_devices = [];
 in_flight = 0;
 full_sync_timer = 0;
+debug = logging.level === "trace"; // this is used by toolbox functions. .. Is it though? TODO check
+log = 0; // this is the logger object, overriden at the bottom of the script. TODO necessary?
 
 function total_power() {
     if (simulation_power) return simulation_power;
@@ -79,16 +87,16 @@ function total_power() {
 function callback(result, error_code, error_message, user_data) {
     in_flight--;
     if (error_code != 0) {
-        log("fail " + user_data);
+        log.warn("fail " + user_data);
         // TBD: currently we don't have any retry logic
     } else {
-        if (logging) log("success");
+        log.debug("success");
     }
 }
 
 function turn(deviceName, dir) {
     if (dir != "on" && dir != "off") {
-        log("Invalid direction '" + dir + "'in turn");
+        log.warn("Invalid direction '" + dir + "'in turn");
         return;
     }
     let device = devices[device_name_index_map[deviceName]];
@@ -100,14 +108,14 @@ function turn(deviceName, dir) {
 
     if (device.presumed_state == dir) {
         if (!device.requires_sync) {
-            if (logging) log("Device " + device.name + " is presumed to already be " + dir);
+            log.debug("Device " + device.name + " is presumed to already be " + dir);
             return;
         } else {
-            if (logging) log("Device " + device.name + " is presumed to already be " + dir + ", but will be synced anyway");
+            log.debug("Device " + device.name + " is presumed to already be " + dir + ", but will be synced anyway");
             device.requires_sync = false;
         }
     } else {
-        if (logging) log("Turn " + device.name + " " + dir);
+        log.debug("Turn " + device.name + " " + dir);
     }
 
     device.presumed_state = dir;
@@ -143,8 +151,8 @@ function check_power(msg) {
                 channel_power[Pro3EM_channels[k]] = msg.delta[Pro3EM_channels[k] + '_act_power'];
     }
     let currentPower = total_power();
-    log("Current power: " + currentPower + "W, headroom: " + power_headroom + "W");
-    // log("in_flight: " + in_flight);
+    log.info("Current power: " + currentPower + "W, headroom: " + power_headroom + "W");
+    // log.info("in_flight: " + in_flight);
 
 
     // The actual decision making
@@ -167,7 +175,7 @@ function check_power(msg) {
         }
     }
 
-    if (logging) {
+    if (log.isInfo()) {
         let states = "";
         for (let i = 0; i < desiredDeviceStates.length; i++) {
             states += desiredDeviceStates[i].name + ":" + desiredDeviceStates[i].turned;
@@ -175,15 +183,15 @@ function check_power(msg) {
                 states += ", ";
             }
         }
-        log("Desired device states: " + states);
-        log("expect " + -remainingPower + "W surplus");
+        log.info("Desired device states: " + states);
+        log.info("expect " + -remainingPower + "W surplus");
     }
 
     for (let deviceState of desiredDeviceStates) {
         turn(deviceState.name, deviceState.turned);
     }
 
-    // log("in_flight: " + in_flight);
+    // log.info("in_flight: " + in_flight);
 
 }
 
@@ -219,13 +227,68 @@ function manualSortDevices(devices) {
     return sorted;
 }
 
-function log(msg) {
-    // TODO consider adding an option to send logs directly to a log server, MQTT, etc.
-    print("load-shedding.js: " + msg);
-}
+log = {
+    isError: function () {
+        return logging.level === "error" || logging.level === "warn" || logging.level === "info" || logging.level === "debug" || logging.level === "trace";
+    },
+    isWarn: function () {
+        return logging.level === "warn" || logging.level === "info" || logging.level === "debug" || logging.level === "trace";
+    },
+    isInfo: function () {
+        return logging.level === "info" || logging.level === "debug" || logging.level === "trace";
+    },
+    isDebug: function () {
+        return logging.level === "debug" || logging.level === "trace";
+    },
+    isTrace: function () {
+        return logging.level === "trace";
+    },
+    error: function (msg) {
+        if (this.isError()) {
+            this._log(msg);
+        }
+    },
+    warn: function (msg) {
+        if (this.isWarn()) {
+            this._log(msg);
+        }
+    },
+    info: function (msg) {
+        if (this.isInfo()) {
+            this._log(msg);
+        }
+    },
+    debug: function (msg) {
+        if (this.isDebug()) {
+            this._log(msg);
+        }
+    },
+    trace: function (msg) {
+        if (this.isTrace()) {
+            this._log(msg);
+        }
+    },
+    _log: function (msg) {
+        print("load-shedding.js: " + msg);
+
+        if (logging.gotify.enabled) {
+            let body = {
+                "message": msg
+            };
+            Call("HTTP.POST", {
+                "url": "http://100.107.143.40/message",
+                "body": body,
+                "headers": {
+                    "X-Gotify-Key": logging.gotify.token,
+                    "Content-Type": "application/json"
+                }
+            });
+        }
+    }
+};
 
 function requestFullSync() {
-    log("Requesting full sync");
+    log.debug("Requesting full sync");
     for (let d of devices) {
         d.requires_sync = true;
     }
@@ -239,14 +302,14 @@ function init() {
     }
     sorted_devices = manualSortDevices(devices.slice(0));
 
-    full_sync_timer = Timer.set(sync_interval*1000, true, requestFullSync);
-        
+    full_sync_timer = Timer.set(sync_interval * 1000, true, requestFullSync);
+
 }
 
 
 
 //This is the entry point of the script (called by the Toolbox after 2sek)
-function Main(){
+function Main() {
     init();
     Shelly.addStatusHandler(check_power);
 }
