@@ -39,11 +39,24 @@ logging = {
     level: "debug",                    // set to error, warn, info, debug or trace for increasing amounts of logging
     gotify: {
         enabled: false,                // set to true to send logs to a Gotify server
-        url: "http://100.107.143.40",  // The URL of the Gotify server
+        url: "http://127.0.0.1",  // The URL of the Gotify server
         token: "Av.ogGK880RG_7n"       // token for the Gotify server. Predefined with my local docker container, so good luck exploiting these credentials
+    },
+    // The MQTT implementation is not for general logging, but to get specific internal information into grafana for testing and debugging
+    mqtt: {
+        enabled: true,                 // set to true to report expected power and device state changes to an MQTT topic
+        topicPrefix: "shellypro3em-simulated/", // MQTT topic prefix to publish to
     }
 }
-simulation_power = 0;                   // set this to manually test in console
+
+simulation = {                          // these are for testing purposes
+    enabled: false,                     // set to true to enable simulation mode. This means that the script will not actually turn on/off devices, but will log what it would do
+    power: 0,                            // set to a positive or negative number to simulate power production or consumption. Works also with simulation disabled, actually turning on/off devices!
+    mqtt: {
+        enabled: true,                 // set to true to report expected power to an MQTT topic
+        topicPrefix: "shellypro3em-simulated/", // MQTT topic to publish power to
+    }
+}
 
 // name needs to be unique
 // descr is not used and just for taking notes for the device
@@ -76,7 +89,7 @@ debug = logging.level === "trace"; // this is used by toolbox functions. .. Is i
 log = 0; // this is the logger object, overriden at the bottom of the script. TODO necessary?
 
 function total_power() {
-    if (simulation_power) return simulation_power;
+    if (simulation.power) return simulation.power;
     let power = 0;
     for (let k in channel_power)
         power += channel_power[k];
@@ -121,7 +134,12 @@ function turn(deviceName, dir) {
     device.presumed_state = dir;
     let on = dir == "on" ? "true" : "false";
 
-    if (simulation_power) return;
+    if (logging.mqtt.enabled) {
+        let topic = logging.mqtt.topicPrefix + deviceName + "/on";
+        MQTT.publish(topic, on);
+    }
+
+    if (simulation.enabled) return;
 
     if (def(device.gen)) {
         if (device.gen == 1)
@@ -185,6 +203,12 @@ function check_power(msg) {
         }
         log.info("Desired device states: " + states);
         log.info("expect " + -remainingPower + "W surplus");
+    }
+
+    if (logging.mqtt.enabled) {
+        let topic = logging.mqtt.topicPrefix + "expected-power";
+        let message = "" + (currentPower-remainingPower);
+        MQTT.publish(topic, message);
     }
 
     for (let deviceState of desiredDeviceStates) {
