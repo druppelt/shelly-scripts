@@ -29,8 +29,8 @@ Pro4PM_channels = [0, 1, 2, 3];      // default to sum of all channels for 4PM
 Pro3EM_channels = ['a', 'b', 'c'];   // similar if device is 3EM
 
 power_headroom = 500;                   // script will try to keep this value as headroom, to avoid drawing from grid if power readings are fluctuating a lot
-// power_increase_threshold_duration = 60; // time in seconds that the power has to be above the threshold before turning on a device
-// power_decrease_threshold_duration = 30; // time in seconds that the power has to be below the threshold before turning off a device
+power_increase_threshold_duration = 60; // time in seconds that the power has to be above the threshold before turning on a device
+power_decrease_threshold_duration = 30; // time in seconds that the power has to be below the threshold before turning off a device
 sync_interval = 5 * 60;                 // time between full syncs, in seconds
 invert_power_readings = true;           // if the power readings are inverted, set this to true. The logs of the script should report negative values if you produce more than you consume
 
@@ -72,9 +72,6 @@ const devices = [
 
 /***************   program variables, do not change  ***************/
 
-ts = 0;
-idx_next_to_toggle = -1;
-last_cycle_time = 0;
 channel_power = {};
 verifying = false;
 device_name_index_map = {}; // maps device name to index in devices array
@@ -83,6 +80,11 @@ in_flight = 0;
 full_sync_timer = 0;
 debug = logging.level === "trace"; // this is used by toolbox functions. .. Is it though? TODO check
 log = 0; // this is the logger object, overriden at the bottom of the script. TODO necessary?
+current_expected_power_draw = 0;
+current_desired_device_states = [];
+pending_states = {};
+step_up_timer = 0;
+step_down_timer = 0;
 
 function total_power() {
     if (simulation.power) return simulation.power;
@@ -170,49 +172,107 @@ function check_power(msg) {
 
 
     // The actual decision making
-    let desiredDeviceStates = [];
+    let newDesiredDeviceStates = [];
+    let newExpectedPowerDraw = 0;
+    let remainingPower = currentPower;
     for (let device of devices) {
-        desiredDeviceStates.push({ name: device.name, turned: "off" });
+        newDesiredDeviceStates.push({ name: device.name, turned: "off" });
     }
-    remainingPower = currentPower;
     for (let device of sorted_devices) {
         if (remainingPower + device.expectedPower <= -power_headroom) {
             let deviceState;
-            for (let i in desiredDeviceStates) {
-                if (desiredDeviceStates[i].name === device.name) {
-                    deviceState = desiredDeviceStates[i];
+            for (let i in newDesiredDeviceStates) {
+                if (newDesiredDeviceStates[i].name === device.name) {
+                    deviceState = newDesiredDeviceStates[i];
                     break;
                 }
             }
             deviceState.turned = "on";
             remainingPower += device.expectedPower;
+            newExpectedPowerDraw += device.expectedPower;
         }
     }
 
-    if (log.isInfo()) {
-        let states = "";
-        for (let i = 0; i < desiredDeviceStates.length; i++) {
-            states += desiredDeviceStates[i].name + ":" + desiredDeviceStates[i].turned;
-            if (i < desiredDeviceStates.length - 1) {
-                states += ", ";
+    if (log.isDebug()) {
+        log.debug("Calculated desired device states: " + formatDeviceStates(newDesiredDeviceStates) + ", expected power draw: " + newExpectedPowerDraw + "W, expected surplus: " + -remainingPower + "W");
+    }
+
+
+    // every new desired state needs to be stored with their timer (no duplicated 'expected power draw' though, so check before store)
+    // every tick every timer needs to be checked if the value is below the threshold -> cancel timer
+    // once a timer finishes, apply desired device states and remove from list  
+
+    if (current_expected_power_draw != newExpectedPowerDraw) {
+        if (newExpectedPowerDraw > current_expected_power_draw) {
+            if (!pending_states[newExpectedPowerDraw]) {
+                pending_states[newExpectedPowerDraw] = { activationTime: Date.now() + power_increase_threshold_duration * 1000, direction: "stepUp", expectedPowerDraw: newExpectedPowerDraw, desiredDeviceStates: newDesiredDeviceStates };
             }
         }
-        log.info("Desired device states: " + states);
-        log.info("expect " + -remainingPower + "W surplus");
+
+        if (newExpectedPowerDraw < current_expected_power_draw) {
+            if (!pending_states[newExpectedPowerDraw]) {
+                pending_states[newExpectedPowerDraw] = { activationTime: Date.now() + power_decrease_threshold_duration * 1000, direction: "stepDown", expectedPowerDraw: newExpectedPowerDraw, desiredDeviceStates: newDesiredDeviceStates };
+            }
+        }
+    }
+
+    let appliedAnyState = false;
+    let now = Date.now();
+    for (let key in pending_states) {
+        let state = pending_states[key];
+        if ( (state.direction == "stepUp" && state.expectedPowerDraw <= newExpectedPowerDraw) || (state.direction == "stepDown" && state.expectedPowerDraw >= newExpectedPowerDraw) ) {
+            if (state.activationTime <= now) {
+                current_expected_power_draw = state.expectedPowerDraw;
+                current_desired_device_states = state.desiredDeviceStates;
+                for (let deviceState of state.desiredDeviceStates) {
+                    turn(deviceState.name, deviceState.turned);
+                }
+                appliedAnyState = true;
+                log.info("Applied desired device states: " + formatDeviceStates(state.desiredDeviceStates) + ", expected power draw: " + state.expectedPowerDraw + "W");
+                delete pending_states[key];
+            }
+        } else {
+            delete pending_states[key];
+            log.debug("Cancelled pending state: " + state.expectedPowerDraw + "W");
+        }
+    }
+
+    if (!appliedAnyState) {
+        // apply current state
+        for (let deviceState of current_desired_device_states) {
+            turn(deviceState.name, deviceState.turned);
+        }
     }
 
     if (logging.mqtt.enabled) {
         let topic = logging.mqtt.topicPrefix + "expected-power";
-        let message = "" + (-currentPower+remainingPower);
+        let message = "" + current_expected_power_draw;
         MQTT.publish(topic, message);
     }
 
-    for (let deviceState of desiredDeviceStates) {
-        turn(deviceState.name, deviceState.turned);
+    // TODO now we are only applying the desired states if there are changes, so we need to readd the full sync.
+    // maybe introduce current_desired_device_states, move requires_sync from device to central var and if it is true here, request full sync.
+    // like this: 
+    // if ( requires_sync ) {
+    //     for (let deviceState of current_desired_device_states) {
+    //         turn(deviceState.name, deviceState.turned);
+    //     }
+    // }
+    // 
+
+
+}
+
+function formatDeviceStates(deviceStates) {
+    let states = "[";
+    for (let i = 0; i < deviceStates.length; i++) {
+        states += deviceStates[i].name + ":" + deviceStates[i].turned;
+        if (i < deviceStates.length - 1) {
+            states += ", ";
+        }
     }
-
-    // log.info("in_flight: " + in_flight);
-
+    states += "]";
+    return states;
 }
 
 function def(o) {
