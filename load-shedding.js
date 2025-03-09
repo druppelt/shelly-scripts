@@ -1,11 +1,5 @@
 // load-shedding script will try to turn on/off devices to match the current measured surplus power
-// based on: https://github.com/ALLTERCO/shelly-script-examples/blob/main/advanced-load-shedding.js
-
-
-// TODO:
-// - check hysteresis implementation
-// - add configurability over MQTT. at least for simulation power, ideally for all params
-
+// https://github.com/druppelt/shelly-scripts
 
 // Key considerations:
 
