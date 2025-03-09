@@ -19,9 +19,6 @@
 
 /************************   settings  ************************/
 
-Pro4PM_channels = [0, 1, 2, 3];      // default to sum of all channels for 4PM 
-Pro3EM_channels = ['a', 'b', 'c'];   // similar if device is 3EM
-
 // script will try to keep this value as headroom, to avoid drawing from grid if power readings are fluctuating a lot
 power_headroom = 500;
 // The difference between the lower and upper threshold for changing the state. E.g. with span=100 and a current expected power of 2000, power needs to be under 1950 to step down the consumers. Or with the next possible power draw of 3000, power needs to be over 3050 to step up the consumers
@@ -35,6 +32,8 @@ sync_interval = 5 * 60;
 // if the power readings are inverted, set this to true. The logs of the script should report negative values if you produce more than you consume
 invert_power_readings = true;
 
+Pro4PM_channels = [0, 1, 2, 3];      // default to sum of all channels for 4PM 
+Pro3EM_channels = ['a', 'b', 'c'];   // similar if device is 3EM
 
 // name needs to be unique
 // descr is not used and just for taking notes for the device
@@ -51,6 +50,8 @@ const devices = [
     { "name": "2.3", "descr": "Shelly 1 Mini Gen 3", "addr": "192.168.178.59", "gen": 1, "type": "relay", "channel": 0, "expectedPower": 3000 },
     // { "name":"3.1", "descr": "Shelly Plus 1, enable to burn EVEN MOAR POWER", "addr":"192.168.178.199", "gen":1, "type":"relay", "channel":0},
 ];
+
+
 
 /*****************  more technical settings  *****************/
 
