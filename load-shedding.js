@@ -39,8 +39,8 @@ logging = {
     level: "debug",                    // set to error, warn, info, debug or trace for increasing amounts of logging
     gotify: {
         enabled: false,                // set to true to send logs to a Gotify server
-        url: "http://127.0.0.1",  // The URL of the Gotify server
-        token: "Av.ogGK880RG_7n"       // token for the Gotify server. Predefined with my local docker container, so good luck exploiting these credentials
+        url: "http://192.168.178.20:8090",  // The URL of the Gotify server
+        token: "A.3EHOG4aPyqI6m"       // token for the Gotify server. Predefined with my local docker container, so good luck exploiting these credentials
     },
     // The MQTT implementation is not for general logging, but to get specific internal information into grafana for testing and debugging
     mqtt: {
@@ -325,38 +325,38 @@ log = {
     },
     error: function (msg) {
         if (this.isError()) {
-            this._log(msg);
+            this._log(msg, "ERROR");
         }
     },
     warn: function (msg) {
         if (this.isWarn()) {
-            this._log(msg);
+            this._log(msg, "WARN");
         }
     },
     info: function (msg) {
         if (this.isInfo()) {
-            this._log(msg);
+            this._log(msg, "INFO");
         }
     },
     debug: function (msg) {
         if (this.isDebug()) {
-            this._log(msg);
+            this._log(msg, "DEBUG");
         }
     },
     trace: function (msg) {
         if (this.isTrace()) {
-            this._log(msg);
+            this._log(msg, "TRACE");
         }
     },
-    _log: function (msg) {
-        print("load-shedding.js: " + msg);
+    _log: function (msg, level) {
+        print(scriptN + " [" + level + "]: " + msg);
 
         if (logging.gotify.enabled) {
             let body = {
                 "message": msg
             };
             Call("HTTP.POST", {
-                "url": "http://100.107.143.40/message",
+                "url": logging.gotify.url + "/message?token=" + logging.gotify.token,
                 "body": body,
                 "headers": {
                     "X-Gotify-Key": logging.gotify.token,
