@@ -3,15 +3,9 @@
 
 
 // TODO:
-// - add hysteresis to prevent rapid on/off cycles (so different thresholds for turning on and off)
-// - add option for some kind of timesmoothing. maybe a moving average of the power consumption, or the power has to be above treshold for x seconds before turning on a device
-// Idea for timesmoothing:
-// store previous desired state with overall expected power
-// every tick, calculate new desired state, check if its equal or higher than the previous overall expected power
-// if it is, add delta time to a timer
-// if it is not, reset timer
-// if the timer reaches a certain threshold, turn all devices to their desired state
-// do the same for turning off devices, with a separate timer and a different threshold
+// - check hysteresis implementation
+// - add configurability over MQTT. at least for simulation power, ideally for all params
+
 
 // Key considerations:
 
@@ -28,31 +22,19 @@
 Pro4PM_channels = [0, 1, 2, 3];      // default to sum of all channels for 4PM 
 Pro3EM_channels = ['a', 'b', 'c'];   // similar if device is 3EM
 
-power_headroom = 500;                   // script will try to keep this value as headroom, to avoid drawing from grid if power readings are fluctuating a lot
-power_increase_threshold_duration = 60; // time in seconds that the power has to be above the threshold before turning on a device
-power_decrease_threshold_duration = 30; // time in seconds that the power has to be below the threshold before turning off a device
-sync_interval = 5 * 60;                 // time between full syncs, in seconds
-invert_power_readings = true;           // if the power readings are inverted, set this to true. The logs of the script should report negative values if you produce more than you consume
+// script will try to keep this value as headroom, to avoid drawing from grid if power readings are fluctuating a lot
+power_headroom = 500;
+// The difference between the lower and upper threshold for changing the state. E.g. with span=100 and a current expected power of 2000, power needs to be under 1950 to step down the consumers. Or with the next possible power draw of 3000, power needs to be over 3050 to step up the consumers
+power_hysteresis_span = 100;
+// time in seconds that the power has to be above the threshold before turning on a device
+power_increase_threshold_duration = 60;
+// time in seconds that the power has to be below the threshold before turning off a device
+power_decrease_threshold_duration = 30;
+// time between full syncs, in seconds
+sync_interval = 5 * 60;
+// if the power readings are inverted, set this to true. The logs of the script should report negative values if you produce more than you consume
+invert_power_readings = true;
 
-callLimit = 3;                          // number of outgoing calls to devices at a time. This is both for turning on/off the relays and for checking the actual state
-logging = {
-    level: "debug",                    // set to error, warn, info, debug or trace for increasing amounts of logging
-    gotify: {
-        enabled: false,                // set to true to send logs to a Gotify server
-        url: "http://192.168.178.20:8090",  // The URL of the Gotify server
-        token: "A.3EHOG4aPyqI6m"       // token for the Gotify server. Predefined with my local docker container, so good luck exploiting these credentials
-    },
-    // The MQTT implementation is not for general logging, but to get specific internal information into grafana for testing and debugging
-    mqtt: {
-        enabled: true,                 // set to true to report expected power and device state changes to an MQTT topic
-        topicPrefix: "shellypro3em-simulated/", // MQTT topic prefix to publish to
-    }
-}
-
-simulation = {                          // these are for testing purposes
-    enabled: false,                     // set to true to enable simulation mode. This means that the script will not actually turn on/off devices, but will log what it would do
-    power: 0,                            // set to a positive or negative number to simulate power production or consumption. Works also with simulation disabled, actually turning on/off devices!
-}
 
 // name needs to be unique
 // descr is not used and just for taking notes for the device
@@ -69,6 +51,28 @@ const devices = [
     { "name": "2.3", "descr": "Shelly 1 Mini Gen 3", "addr": "192.168.178.59", "gen": 1, "type": "relay", "channel": 0, "expectedPower": 3000 },
     // { "name":"3.1", "descr": "Shelly Plus 1, enable to burn EVEN MOAR POWER", "addr":"192.168.178.199", "gen":1, "type":"relay", "channel":0},
 ];
+
+/*****************  more technical settings  *****************/
+
+callLimit = 3;                          // number of outgoing calls to devices at a time. This is both for turning on/off the relays and for checking the actual state
+logging = {
+    level: "info",                    // set to error, warn, info, debug or trace for increasing amounts of logging
+    gotify: {
+        enabled: false,                // set to true to send logs to a Gotify server
+        url: "http://192.168.178.20:8090",  // The URL of the Gotify server
+        token: "A.3EHOG4aPyqI6m"       // token for the Gotify server. Predefined with my local docker container, so good luck exploiting these credentials
+    },
+    // The MQTT implementation is not for general logging, but to get specific internal information into grafana for testing and debugging
+    mqtt: {
+        enabled: true,                 // set to true to report expected power and device state changes to an MQTT topic
+        topicPrefix: "shellypro3em-simulated/", // MQTT topic prefix to publish to
+    }
+}
+
+simulation = {                          // these are for testing purposes
+    enabled: true,                     // set to true to enable simulation mode. This means that the script will not actually turn on/off devices, but will log what it would do
+    power: 0,                            // set to a positive or negative number to simulate power production or consumption. Works also with simulation disabled, actually turning on/off devices!
+}
 
 /***************   program variables, do not change  ***************/
 
@@ -167,7 +171,7 @@ function check_power(msg) {
                 channel_power[Pro3EM_channels[k]] = msg.delta[Pro3EM_channels[k] + '_act_power'];
     }
     let currentPower = total_power();
-    log.info("Current power: " + currentPower + "W, headroom: " + power_headroom + "W");
+    log.info("Current power: " + currentPower + "W, headroom: " + power_headroom + "W, previous expected power draw: " + current_expected_power_draw + "W");
     // log.info("in_flight: " + in_flight);
 
 
@@ -220,7 +224,12 @@ function check_power(msg) {
     let now = Date.now();
     for (let key in pending_states) {
         let state = pending_states[key];
-        if ( (state.direction == "stepUp" && state.expectedPowerDraw <= newExpectedPowerDraw) || (state.direction == "stepDown" && state.expectedPowerDraw >= newExpectedPowerDraw) ) {
+        // TODO only check for hysteresis here, or already when storing the state?
+
+        // check if the pending state is stil valid
+        if ( (state.direction == "stepUp" && state.expectedPowerDraw <= newExpectedPowerDraw && state.expectedPowerDraw + power_headroom + (power_hysteresis_span/2) <= (-currentPower) ) 
+            || (state.direction == "stepDown" && state.expectedPowerDraw >= newExpectedPowerDraw && state.expectedPowerDraw + power_headroom - (power_hysteresis_span/2) <= (-currentPower) ) ) {
+            // if the state has been valid long enough, apply it. Otherwise do nothing
             if (state.activationTime <= now) {
                 current_expected_power_draw = state.expectedPowerDraw;
                 current_desired_device_states = state.desiredDeviceStates;
@@ -232,13 +241,14 @@ function check_power(msg) {
                 delete pending_states[key];
             }
         } else {
+            // if the pending state is no longer valid, cancel it
             delete pending_states[key];
             log.debug("Cancelled pending state: " + state.expectedPowerDraw + "W");
         }
     }
 
     if (!appliedAnyState) {
-        // apply current state
+        // apply current state. This is currently only needed for the full sync
         for (let deviceState of current_desired_device_states) {
             turn(deviceState.name, deviceState.turned);
         }
@@ -249,16 +259,6 @@ function check_power(msg) {
         let message = "" + current_expected_power_draw;
         MQTT.publish(topic, message);
     }
-
-    // TODO now we are only applying the desired states if there are changes, so we need to readd the full sync.
-    // maybe introduce current_desired_device_states, move requires_sync from device to central var and if it is true here, request full sync.
-    // like this: 
-    // if ( requires_sync ) {
-    //     for (let deviceState of current_desired_device_states) {
-    //         turn(deviceState.name, deviceState.turned);
-    //     }
-    // }
-    // 
 
 
 }
