@@ -52,10 +52,6 @@ logging = {
 simulation = {                          // these are for testing purposes
     enabled: false,                     // set to true to enable simulation mode. This means that the script will not actually turn on/off devices, but will log what it would do
     power: 0,                            // set to a positive or negative number to simulate power production or consumption. Works also with simulation disabled, actually turning on/off devices!
-    mqtt: {
-        enabled: true,                 // set to true to report expected power to an MQTT topic
-        topicPrefix: "shellypro3em-simulated/", // MQTT topic to publish power to
-    }
 }
 
 // name needs to be unique
@@ -207,7 +203,7 @@ function check_power(msg) {
 
     if (logging.mqtt.enabled) {
         let topic = logging.mqtt.topicPrefix + "expected-power";
-        let message = "" + (currentPower-remainingPower);
+        let message = "" + (-currentPower+remainingPower);
         MQTT.publish(topic, message);
     }
 
