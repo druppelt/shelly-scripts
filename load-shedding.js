@@ -4,7 +4,7 @@
 // Key considerations:
 
 // 1. Make sure the expected power for each device is accurate. If a device is expected to consume 1000W, but actually consumes 2000W, the script will not be able to accurately manage the load.
-// 2. The lowest value for poll_time should be 60 - during "turn on" cycles, you should allow enough time for inrush spikes to settle.
+// 2. The script re-evaluates every time the shelly reports a new value. This typically occurs every 3-15s. It can't react faster than that.
 // 3. The script will not immediatly turn on/off devices that are presumed to already be on/off. If a device is turned on/off manually, the script will only correct this after the next full sync.
 // 4. Lowering the sync_interval will increase the frequency of full syncs, but it will not increase the speed at which the system reacts to changes in power consumption.
 // 5. Priority is in order of highest expected power and position in device list. To reach e.g. 4000W it will enable a 3000W device and a 1000W device, even if there are 8 higher priority 500W devices.
@@ -16,7 +16,7 @@
 // script will try to keep this value as headroom, to avoid drawing from grid if power readings are fluctuating a lot
 power_headroom = 500;
 // The difference between the lower and upper threshold for changing the state. E.g. with span=100 and a current expected power of 2000, power needs to be under 1950 to step down the consumers. Or with the next possible power draw of 3000, power needs to be over 3050 to step up the consumers
-power_hysteresis_span = 100;
+power_hysteresis_span = 2; // Very low value on purpose, as implementation is (probably) not yet correct
 // time in seconds that the power has to be above the threshold before turning on a device
 power_increase_threshold_duration = 60;
 // time in seconds that the power has to be below the threshold before turning off a device
@@ -49,24 +49,24 @@ const devices = [
 
 /*****************  more technical settings  *****************/
 
-callLimit = 3;                          // number of outgoing calls to devices at a time. This is both for turning on/off the relays and for checking the actual state
+callLimit = 3;                         // number of outgoing calls to devices at a time. This is both for turning on/off the relays and for checking the actual state
 logging = {
-    level: "info",                    // set to error, warn, info, debug or trace for increasing amounts of logging
+    level: "info",                     // set to error, warn, info, debug or trace for increasing amounts of logging
     gotify: {
         enabled: false,                // set to true to send logs to a Gotify server
-        url: "http://192.168.178.20:8090",  // The URL of the Gotify server
-        token: "A.3EHOG4aPyqI6m"       // token for the Gotify server. Predefined with my local docker container, so good luck exploiting these credentials
+        url: "http://127.0.0.1:8090",  // The URL of the Gotify server
+        token: "XXX"                   // token for the Gotify server.
     },
     // The MQTT implementation is not for general logging, but to get specific internal information into grafana for testing and debugging
     mqtt: {
-        enabled: true,                 // set to true to report expected power and device state changes to an MQTT topic
+        enabled: false,                // set to true to report expected power and device state changes to an MQTT topic
         topicPrefix: "shellypro3em-simulated/", // MQTT topic prefix to publish to
     }
 }
 
 simulation = {                          // these are for testing purposes
-    enabled: true,                     // set to true to enable simulation mode. This means that the script will not actually turn on/off devices, but will log what it would do
-    power: 0,                            // set to a positive or negative number to simulate power production or consumption. Works also with simulation disabled, actually turning on/off devices!
+    enabled: false,                     // set to true to enable simulation mode. This means that the script will not actually turn on/off devices, but will log what it would do
+    power: 0,                           // set to a positive or negative number to simulate power production or consumption. Works also with simulation disabled, actually turning on/off devices!
 }
 
 /***************   program variables, do not change  ***************/

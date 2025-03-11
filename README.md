@@ -6,6 +6,28 @@ The idea is to install the Shelly in a way it only measures surplus power of a s
 This is based on: 
 https://github.com/ALLTERCO/shelly-script-examples/blob/main/advanced-load-shedding.js
 
+## Setting up the devices
+
+You have to set up the list of shellys you want to toggle.
+For this, look for `const devices = [`.
+There are multiple devices predefined to show how this should look like:
+
+```json
+{ "name": "1.1", "descr": "Shelly 1 Mini Gen 3", "addr": "192.168.178.49", "gen": 1, "type": "relay", "channel": 0, "expectedPower": 1000 },
+```
+Every line represents a device. To add or remove devices, simply delete the line or duplicate and edit one.
+
+| Parameter      | Description                                                                       |
+|----------------|-----------------------------------------------------------------------------------|
+| `name`         | A unique identifier for the device. Pick whatever you want. Will show up in logs. |
+| `descr`        | A description of the device. This is for you to take notes and not used anywhere. |
+| `addr`         | The IP address of the device. You can look this up in the Shelly app, your router or with an IP scanner. |
+| `gen`          | The generation of the Shelly device. This decides which API version to use. See https://shelly-api-docs.shelly.cloud/gen2/Devices/Gen2/ShellyPro1. Or, when in doubt, just test `1`,`2` and `3`. |
+| `type`         | The type of device (e.g., `relay`). |
+| `channel`      | The channel number to control (for devices with multiple channels, otherwise always `0`). |
+| `expectedPower`| The expected power consumption of the device in watts. |
+
+
 ## Configuration Parameters
 
 | Parameter                          | Description                                                                                                                                                                                                 |
