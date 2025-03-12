@@ -46,10 +46,12 @@ To better understand them, here are visualisations of them independently.
 ![Hysteresis Diagram](hysteresis.svg)
 
 
+![Time Hysteresis Diagram](time_hysteresis.svg)
+
+
 
 ## TODO
 
 - [ ] Write detailed documentation for each configuration parameter.
-- [ ] Add picture for `power_increase_threshold_duration` and `power_decrease_threshold_duration`
 - [ ] Actually implement the hysteresis
 - [ ] Add configurability over MQTT. At least for simulation power, ideally for all params
